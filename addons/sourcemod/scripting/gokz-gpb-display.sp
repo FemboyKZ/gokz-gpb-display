@@ -7,9 +7,6 @@
 
 #define SP_VERSION "0.1"
 
-char g_Prefix[32] = "{green}KZ {grey}| ";
-bool g_UsesGokz   = false;
-
 public Plugin myinfo =
 {
 	name        = "gokz-gpb-display",
@@ -20,38 +17,10 @@ public Plugin myinfo =
 
 }
 
-public void
-OnPluginStart()
+public void OnPluginStart()
 {
 	RegConsoleCmd("sm_pb", Command_ShowPB);
 	RegConsoleCmd("sm_gpb", Command_ShowPB);
-}
-
-public void OnAllPluginsLoaded()
-{
-	g_UsesGokz = LibraryExists("gokz-core");
-
-	ConVar cvPrefix = FindConVar("gokz_chat_prefix");
-	if (cvPrefix != null)
-	{
-		cvPrefix.GetString(g_Prefix, sizeof(g_Prefix));
-	}
-}
-
-public void OnLibraryRemoved(const char[] name)
-{
-	if (StrEqual(name, "gokz-core"))
-	{
-		g_UsesGokz = false;
-	}
-}
-
-public void OnLibraryAdded(const char[] name)
-{
-	if (StrEqual(name, "gokz-core"))
-	{
-		g_UsesGokz = true;
-	}
 }
 
 public void GOKZ_OnOptionChanged(int client, const char[] option, any newValue)
@@ -67,16 +36,8 @@ public void GOKZ_OnFirstSpawn(int client)  // player_spawn post hook
 {
 	if (IsValidClient(client))
 	{
-		int mode           = 2;  // Default to KZTimer
-		if (g_UsesGokz)
-		{
-			mode = GOKZ_GetCoreOption(client, Option_Mode);
-		}
-
-		if (mode >= sizeof(gC_APIModes))
-		{
-			return;
-		}
+		int mode = 2;  // Default to KZTimer
+		mode = GOKZ_GetCoreOption(client, Option_Mode);
 		RequestRecords(client, mode);
 	}
 }

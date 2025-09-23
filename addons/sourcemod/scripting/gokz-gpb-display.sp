@@ -6,22 +6,15 @@
 #include <smjansson>
 #include <SteamWorks>
 
-#define SP_VERSION "1.1.0"
-
-// ─────────────────────────────────────────────────────────────
-// Simple in-memory PB cache (per map + mode + hasTP)
-// key = "<steam32>|<mode>|<hasTP>|<map>"
-// stores time (float) and points (int) in two StringMaps
-// ─────────────────────────────────────────────────────────────
-static StringMap g_PBTime;
-static StringMap g_PBPoints;
+#include "gpb-display/utils.sp"
+#include "gpb-display/diff.sp"
 
 public Plugin myinfo =
 {
     name        = "gokz-gpb-display",
     author      = "Reeed & Cinyan10",
     description = "show PB/WR on spawn/mode change and PB on finish; shows Δ vs stored PB",
-    version     = SP_VERSION,
+    version     = "1.1.0",
     url         = "https://axekz.com/"
 };
 
@@ -32,55 +25,6 @@ public void OnPluginStart()
 
     RegConsoleCmd("sm_pb",  Command_ShowPB);
     RegConsoleCmd("sm_gpb", Command_ShowPB);
-}
-
-public void OnClientDisconnect(int client)
-{
-    // optional: purge this client’s keys for current map to save memory (left out for simplicity)
-}
-
-// ─────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────
-static void BuildKey(int client, int mode, int hasTP, const char[] map, char[] key, int keylen)
-{
-    int steam32 = GetSteamAccountID(client);
-    Format(key, keylen, "%d|%d|%d|%s", steam32, mode, hasTP, map);
-}
-
-static void StorePB(int client, int mode, int hasTP, const char[] map, float time, int points)
-{
-    if (time <= 0.0) return;
-    char key[192];
-    BuildKey(client, mode, hasTP, map, key, sizeof key);
-    g_PBTime.SetValue(key, view_as<any>(time));
-    g_PBPoints.SetValue(key, view_as<any>(points));
-}
-
-static bool GetStoredPB(int client, int mode, int hasTP, const char[] map, float &time, int &points)
-{
-    char key[192];
-    BuildKey(client, mode, hasTP, map, key, sizeof key);
-    any val;
-    bool ok1 = g_PBTime.GetValue(key, val);
-    if (!ok1) return false;
-    time = view_as<float>(val);
-    if (!g_PBPoints.GetValue(key, val)) { points = 0; }
-    else { points = view_as<int>(val); }
-    return true;
-}
-
-static void FormatSignedDiff(char[] out, int len, float seconds)
-{
-    // uses FormatDuration() for absolute, prefixes sign
-    char absbuf[32];
-    FormatDuration(absbuf, sizeof absbuf, FloatAbs(seconds));
-    if (seconds > 0.0005)
-        Format(out, len, "+%s", absbuf);
-    else if (seconds < -0.0005)
-        Format(out, len, "-%s", absbuf);
-    else
-        strcopy(out, len, "±0");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -95,89 +39,54 @@ static void PrintWRLine(int client, int mode, int hasTeleports, float wrTime, co
         GOKZ_PrintToChat(client, false, "{yellow}%s {default} - {darkblue}%s{default} - {blue}PRO {red}WR {default}[ {green}%s{default} ]", map, gC_ModeShort[mode], t);
 }
 
-static void PrintPBLine_Base(int client, int mode, int hasTeleports, const char[] map,
-                             float pbTime, int pbPts, int pbTP, const char[] dateOnly, bool pbOnly)
+static void PrintPBLine(int client, int mode, int hasTeleports, const char[] map,
+                        float pbTime, int pbPts, const char[] dateYMD)
 {
-    char t[32]; FormatDuration(t, sizeof t, pbTime);
-    if (pbOnly)
-    {
+    char t[32];     FormatDuration(t, sizeof t, pbTime);
+    char dateS[32]; FormatDateShort(dateYMD, dateS, sizeof dateS);
+
+    if (hasTeleports > 0)
         GOKZ_PrintToChat(client, false,
-            "{darkblue}%s {default}- %s {default}- PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%d{default} TP | {yellow}%s{default} ]",
-            gC_ModeShort[mode], map, t, pbPts, pbTP, dateOnly);
-    }
+            "{yellow}%s{default} - {darkblue}%s{default} - {gold}NUB{default} PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%s{default} ]",
+            map, gC_ModeShort[mode], t, pbPts, dateS);
     else
-    {
-        if (hasTeleports > 0)
-            GOKZ_PrintToChat(client, false,
-                "{yellow}%s{default} - {darkblue}%s{default} -  {gold}NUB{default} PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%d{default} TP | {yellow}%s{default} ]",
-                map, gC_ModeShort[mode], t, pbPts, pbTP, dateOnly);
-        else
-            GOKZ_PrintToChat(client, false,
-                "{yellow}%s{default} - {darkblue}%s{default} -  {blue}PRO{default} PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%d{default} TP | {yellow}%s{default} ]",
-                map, gC_ModeShort[mode], t, pbPts, pbTP, dateOnly);
-    }
+        GOKZ_PrintToChat(client, false,
+            "{yellow}%s{default} - {darkblue}%s{default} - {blue}PRO{default} PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%s{default} ]",
+            map, gC_ModeShort[mode], t, pbPts, dateS);
 }
 
-// Used ONLY for finish: adds Δtime and +pts (if improved)
-static void PrintPBLine_WithDiff(int client, int mode, int hasTeleports, const char[] map,
-                                 float pbTime, int pbPts, int pbTP, const char[] dateOnly,
-                                 bool hasStored, float oldTime, int oldPts)
-{
-    char t[32]; FormatDuration(t, sizeof t, pbTime);
-
-    char extra[64]; extra[0] = '\0';
-    if (hasStored)
-    {
-        float dt = pbTime - oldTime;
-        char sdt[24]; FormatSignedDiff(sdt, sizeof sdt, dt);
-
-        if (dt < 0.0)
-        {
-            int dpts = pbPts - oldPts;
-            if (dpts > 0)
-                Format(extra, sizeof extra, " | Δ {green}%s{default} | {green}+%d{default} Pts", sdt, dpts);
-            else
-                Format(extra, sizeof extra, " | Δ {green}%s{default}", sdt);
-        }
-        else
-        {
-            // show Δ even if slower / unchanged
-            Format(extra, sizeof extra, " | Δ {yellow}%s{default}", sdt);
-        }
-    }
-
-    GOKZ_PrintToChat(client, false,
-        "{darkblue}%s {default}- %s {default}- PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%d{default} TP | {yellow}%s{default}%s ]",
-        gC_ModeShort[mode], map, t, pbPts, pbTP, dateOnly, extra);
-}
 
 // ─────────────────────────────────────────────────────────────
 // Events / Commands
 // ─────────────────────────────────────────────────────────────
-public void GOKZ_OnOptionChanged(int client, const char[] option, any newValue)
-{
-    if (StrEqual(option, gC_CoreOptionNames[Option_Mode]))
-    {
-        int mode = GOKZ_GetCoreOption(client, Option_Mode);
-        RequestRecords(client, mode, false); // spawn/mode change → print WR + PB (and store baseline)
-    }
-}
 
 public void GOKZ_OnFirstSpawn(int client)
 {
+    // first spawn → print WR + PB (and store baseline)
     if (IsValidClient(client))
     {
         int mode = GOKZ_GetCoreOption(client, Option_Mode);
-        RequestRecords(client, mode, false); // first spawn → print WR + PB (and store baseline)
+        RequestRecords(client, mode, false); 
+    }
+}
+
+public void GOKZ_OnOptionChanged(int client, const char[] option, any newValue)
+{
+    // spawn/mode change → print WR + PB (and store baseline)
+    if (StrEqual(option, gC_CoreOptionNames[Option_Mode]))
+    {
+        int mode = GOKZ_GetCoreOption(client, Option_Mode);
+        RequestRecords(client, mode, false); 
     }
 }
 
 public Action Command_ShowPB(int client, int args)
 {
+    // on-demand → PB only (no WR)
     if (!IsValidClient(client)) return Plugin_Handled;
     int mode = GOKZ_GetCoreOption(client, Option_Mode);
     if (mode >= sizeof(gC_APIModes)) return Plugin_Handled;
-    RequestRecords(client, mode, true); // on-demand → PB only (no WR)
+    RequestRecords(client, mode, true); 
     return Plugin_Handled;
 }
 
@@ -267,7 +176,7 @@ static void HTTPRequestCompleted_Stage2(Handle request, bool failure, bool reque
     // Print PB for current leg and STORE as baseline (spawn/mode-change path)
     if (pbTime > 0.0)
     {
-        PrintPBLine_Base(client, mode, hasTeleports, map, pbTime, pbPoints, pbTeleports, dateOnly, pbOnly);
+        PrintPBLine(client, mode, hasTeleports, map, pbTime, pbPoints, dateOnly);
         StorePB(target, mode, hasTeleports, map, pbTime, pbPoints);
     }
 
@@ -294,23 +203,7 @@ static void HTTPRequestCompleted_Stage2(Handle request, bool failure, bool reque
 // ─────────────────────────────────────────────────────────────
 // Auto Print PB when they finished the map (PB-only)
 // ─────────────────────────────────────────────────────────────
-public void GOKZ_LR_OnTimeProcessed(
-    int client,
-    int steamID,
-    int mapID,
-    int course,
-    int mode,
-    int style,
-    float runTime,
-    int teleportsUsed,
-    bool firstTime,
-    float pbDiff,
-    int rank,
-    int maxRank,
-    bool firstTimePro,
-    float pbDiffPro,
-    int rankPro,
-    int maxRankPro)
+public void GOKZ_LR_OnTimeProcessed(int client, int steamID, int mapID, int course, int mode, int style, float runTime, int teleportsUsed, bool firstTime, float pbDiff, int rank, int maxRank, bool firstTimePro, float pbDiffPro, int rankPro, int maxRankPro)
 {
     if (!IsValidClient(client))
         return;
@@ -362,43 +255,4 @@ public Action Timer_FetchAndPrintPB(Handle timer, DataPack data)
 
     delete data;
     return Plugin_Stop;
-}
-
-static void GlobalPB_Callback_PrintPBWithDiff(Handle request, bool failure, bool success, EHTTPStatusCode status, DataPack data)
-{
-    if (failure || !success || status != k_EHTTPStatusCode200OK)
-    { delete request; delete data; return; }
-
-    float pbTime; int pbTP, pbPts; char when[64]; when[0] = '\0';
-    if (!GetRequestRecordInfoWithDate(request, pbTime, pbTP, pbPts, when, sizeof when))
-    { delete request; delete data; return; }
-    delete request;
-
-    data.Reset();
-    int userid = data.ReadCell();
-    int client = GetClientOfUserId(userid);
-    data.ReadCell(); // target
-    int mode = data.ReadCell();
-    data.ReadCell(); // course
-    int hasTP = data.ReadCell();
-    char map[64]; data.ReadString(map, sizeof map);
-    data.ReadFloat(); // placeholder
-    if (!IsValidClient(client)) { delete data; return; }
-
-    // ISO → YYYY-MM-DD
-    char dateOnly[16]; dateOnly[0] = '\0';
-    int tpos = FindCharInString(when, 'T');
-    if (tpos > 0 && tpos < sizeof(when)) { strcopy(dateOnly, sizeof(dateOnly), when); dateOnly[tpos] = '\0'; }
-    else { strcopy(dateOnly, sizeof(dateOnly), when); }
-
-    // Diff vs stored baseline (from first spawn / last stored)
-    float oldTime; int oldPts; bool hadBaseline = GetStoredPB(client, mode, hasTP, map, oldTime, oldPts);
-
-    // Print with Δ and +pts (if improved)
-    PrintPBLine_WithDiff(client, mode, hasTP, map, pbTime, pbPts, pbTP, dateOnly, hadBaseline, oldTime, oldPts);
-
-    // Update baseline to the latest PB
-    StorePB(client, mode, hasTP, map, pbTime, pbPts);
-
-    delete data;
 }

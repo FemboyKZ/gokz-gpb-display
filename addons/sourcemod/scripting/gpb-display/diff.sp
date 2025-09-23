@@ -34,20 +34,25 @@ stock void GlobalPB_Callback_PrintPBWithDiff(Handle request, bool failure, bool 
     if (failure || !success || status != k_EHTTPStatusCode200OK)
     { delete request; delete data; return; }
 
-    float pbTime; int pbTP, pbPts; char when[64]; when[0] = '\0';
-    if (!GetRequestRecordInfoWithDate(request, pbTime, pbTP, pbPts, when, sizeof when))
+    float fetchedPBTime; int pbTP, fetchedPts; char when[64]; when[0] = '\0';
+    if (!GetRequestRecordInfoWithDate(request, fetchedPBTime, pbTP, fetchedPts, when, sizeof when))
     { delete request; delete data; return; }
     delete request;
 
     data.Reset();
     int userid = data.ReadCell();
     int client = GetClientOfUserId(userid);
-    data.ReadCell(); // target
+    data.ReadCell();                    // target
     int mode = data.ReadCell();
-    data.ReadCell(); // course
+    data.ReadCell();                    // course
     int hasTP = data.ReadCell();
     char map[64]; data.ReadString(map, sizeof map);
-    data.ReadFloat(); // placeholder
+
+    float newRunTime = data.ReadFloat();  // authoritative NEW time
+    float oldTime    = data.ReadFloat();  // authoritative OLD time (snapshot)
+    int oldPts       = data.ReadCell();   // authoritative OLD points
+    bool hadBaseline = (data.ReadCell() != 0);
+
     if (!IsValidClient(client)) { delete data; return; }
 
     // ISO → YYYY-MM-DD
@@ -56,14 +61,18 @@ stock void GlobalPB_Callback_PrintPBWithDiff(Handle request, bool failure, bool 
     if (tpos > 0 && tpos < sizeof(when)) { strcopy(dateOnly, sizeof(dateOnly), when); dateOnly[tpos] = '\0'; }
     else { strcopy(dateOnly, sizeof(dateOnly), when); }
 
-    // Diff vs stored baseline (from first spawn / last stored)
-    float oldTime; int oldPts; bool hadBaseline = GetStoredPB(client, mode, hasTP, map, oldTime, oldPts);
+    // Use NEW time from the run we *just finished*
+    float pbTimeToShow = newRunTime;
+    int   pbPtsToShow  = fetchedPts;   // use fetched NEW points
+    int   dPts         = hadBaseline ? (pbPtsToShow - oldPts) : 0;
 
-    // Print with Δ and +pts (if improved)
-    PrintPBLine_WithDiff(client, mode, hasTP, map, pbTime, pbPts, pbTP, dateOnly, hadBaseline, oldTime, oldPts);
+    // Print with Δ computed against the snapshotted baseline
+    PrintPBLine_WithDiff(client, mode, hasTP, map,
+                         pbTimeToShow, pbPtsToShow, pbTP, dateOnly,
+                         hadBaseline, oldTime, oldPts);
 
-    // Update baseline to the latest PB
-    StorePB(client, mode, hasTP, map, pbTime, pbPts);
+    // Update baseline *after* printing
+    StorePB(client, mode, hasTP, map, pbTimeToShow, pbPtsToShow);
 
     delete data;
 }

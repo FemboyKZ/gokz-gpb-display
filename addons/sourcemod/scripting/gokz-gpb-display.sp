@@ -47,19 +47,17 @@ static void PrintPBLine(int client, int mode, int hasTeleports, const char[] map
 
     if (hasTeleports > 0)
         GOKZ_PrintToChat(client, false,
-            "{yellow}%s{default} - {darkblue}%s{default} - {gold}NUB{default} PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%s{default} ]",
+            "{yellow}%s{default} - {darkblue}%s{default} - {gold}NUB{default}  {yellow}PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%s{default} ]",
             map, gC_ModeShort[mode], t, pbPts, dateS);
     else
         GOKZ_PrintToChat(client, false,
-            "{yellow}%s{default} - {darkblue}%s{default} - {blue}PRO{default} PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%s{default} ]",
+            "{yellow}%s{default} - {darkblue}%s{default} - {blue}PRO{default}  {yellow}PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%s{default} ]",
             map, gC_ModeShort[mode], t, pbPts, dateS);
 }
-
 
 // ─────────────────────────────────────────────────────────────
 // Events / Commands
 // ─────────────────────────────────────────────────────────────
-
 public void GOKZ_OnFirstSpawn(int client)
 {
     // first spawn → print WR + PB (and store baseline)
@@ -203,7 +201,9 @@ static void HTTPRequestCompleted_Stage2(Handle request, bool failure, bool reque
 // ─────────────────────────────────────────────────────────────
 // Auto Print PB when they finished the map (PB-only)
 // ─────────────────────────────────────────────────────────────
-public void GOKZ_LR_OnTimeProcessed(int client, int steamID, int mapID, int course, int mode, int style, float runTime, int teleportsUsed, bool firstTime, float pbDiff, int rank, int maxRank, bool firstTimePro, float pbDiffPro, int rankPro, int maxRankPro)
+public void GOKZ_LR_OnTimeProcessed(int client, int steamID, int mapID, int course, int mode,
+    int style, float runTime, int teleportsUsed, bool firstTime, float pbDiff,
+    int rank, int maxRank, bool firstTimePro, float pbDiffPro, int rankPro, int maxRankPro)
 {
     if (!IsValidClient(client))
         return;
@@ -213,21 +213,35 @@ public void GOKZ_LR_OnTimeProcessed(int client, int steamID, int mapID, int cour
         return;
 
     bool isPro = (teleportsUsed == 0);
+    int hasTP = isPro ? 0 : 1;
+
+    // Snapshot the PRE-update baseline *now*
+    float oldTime = 0.0;
+    int oldPts = 0;
+    char map[64]; GetCurrentMap(map, sizeof map); GetMapDisplayName(map, map, sizeof map);
+    bool hadBaseline = GetStoredPB(client, mode, hasTP, map, oldTime, oldPts);
 
     DataPack dp = CreateDataPack();
-    dp.WriteCell(GetClientUserId(client));
-    dp.WriteCell(isPro ? 0 : 1);  // hasTP flag (0 = PRO, 1 = NUB)
-    dp.WriteFloat(runTime);       // currently unused
+    dp.WriteCell(GetClientUserId(client)); // userid
+    dp.WriteCell(hasTP);                   // leg
+    dp.WriteFloat(runTime);                // NEW PB time (ground truth for Δ)
+    dp.WriteFloat(oldTime);                // snapshot of OLD PB time
+    dp.WriteCell(oldPts);                  // snapshot of OLD PB points
+    dp.WriteCell(hadBaseline ? 1 : 0);     // snapshot: had baseline?
 
+    // A short delay is fine; we already captured baseline locally.
     CreateTimer(2.0, Timer_FetchAndPrintPB, dp, TIMER_FLAG_NO_MAPCHANGE);
 }
 
 public Action Timer_FetchAndPrintPB(Handle timer, DataPack data)
 {
     data.Reset();
-    int userid = data.ReadCell();
-    int hasTP  = data.ReadCell();   // 1 = NUB, 0 = PRO
-    data.ReadFloat();               // runTime (unused)
+    int userid  = data.ReadCell();
+    int hasTP   = data.ReadCell();
+    float runTime = data.ReadFloat();   // new PB time
+    float oldTime = data.ReadFloat();   // old PB time (snapshot)
+    int oldPts    = data.ReadCell();    // old PB points (snapshot)
+    bool hadBaseline = (data.ReadCell() != 0);
 
     int client = GetClientOfUserId(userid);
     if (!IsValidClient(client))
@@ -236,21 +250,22 @@ public Action Timer_FetchAndPrintPB(Handle timer, DataPack data)
         return Plugin_Stop;
     }
 
-    char map[64];
-    GetCurrentMap(map, sizeof(map));
-    GetMapDisplayName(map, map, sizeof(map));
-
+    char map[64]; GetCurrentMap(map, sizeof map); GetMapDisplayName(map, map, sizeof map);
     int mode = GOKZ_GetCoreOption(client, Option_Mode);
 
     DataPack carry = CreateDataPack();
     carry.WriteCell(userid);
-    carry.WriteCell(userid);         // target
+    carry.WriteCell(userid);           // target
     carry.WriteCell(mode);
-    carry.WriteCell(0);              // course
+    carry.WriteCell(0);                // course
     carry.WriteCell(hasTP);
     carry.WriteString(map);
-    carry.WriteFloat(0.0);           // placeholder
+    carry.WriteFloat(runTime);         // keep the NEW PB time
+    carry.WriteFloat(oldTime);         // keep the OLD PB time
+    carry.WriteCell(oldPts);           // keep the OLD PB points
+    carry.WriteCell(hadBaseline ? 1 : 0);
 
+    // We still fetch to get date + new points, but Δ uses runTime vs oldTime.
     RequestGlobalPB(false, client, map, 0, mode, hasTP == 1, GlobalPB_Callback_PrintPBWithDiff, carry);
 
     delete data;

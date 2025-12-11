@@ -22,6 +22,7 @@ public void OnPluginStart()
 {
     if (g_PBTime == null)   g_PBTime   = new StringMap();
     if (g_PBPoints == null) g_PBPoints = new StringMap();
+    if (g_PBDate == null)   g_PBDate   = new StringMap();
 
     RegConsoleCmd("sm_pb",  Command_ShowPB);
     RegConsoleCmd("sm_gpb", Command_ShowPB);
@@ -34,9 +35,9 @@ static void PrintWRLine(int client, int mode, int hasTeleports, float wrTime, co
 {
     char t[32]; FormatDuration(t, sizeof t, wrTime);
     if (hasTeleports > 0)
-        GOKZ_PrintToChat(client, false, "{yellow}%s {default} - {darkblue}%s{default} - {gold}NUB {red}WR {default}[ {green}%s{default} ]", map, gC_ModeShort[mode], t);
+        GOKZ_PrintToChat(client, false, "{purple}%s{default} - {darkblue}%s{default} - {gold}NUB {red}WR {default}[ {lightgreen}%s{default} ]", map, gC_ModeShort[mode], t);
     else
-        GOKZ_PrintToChat(client, false, "{yellow}%s {default} - {darkblue}%s{default} - {blue}PRO {red}WR {default}[ {green}%s{default} ]", map, gC_ModeShort[mode], t);
+        GOKZ_PrintToChat(client, false, "{purple}%s{default} - {darkblue}%s{default} - {blue}PRO {red}WR {default}[ {lightgreen}%s{default} ]", map, gC_ModeShort[mode], t);
 }
 
 static void PrintPBLine(int client, int mode, int hasTeleports, const char[] map,
@@ -47,11 +48,11 @@ static void PrintPBLine(int client, int mode, int hasTeleports, const char[] map
 
     if (hasTeleports > 0)
         GOKZ_PrintToChat(client, false,
-            "{yellow}%s{default} - {darkblue}%s{default} - {gold}NUB{default}  {yellow}PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%s{default} ]",
+            "{purple}%s{default} - {darkblue}%s{default} - {gold}NUB{default}  {yellow}PB {default}[ {lightgreen}%s {default}| {yellow}%d{default}{grey} Pts{default} | {bluegrey}%s{default} ]",
             map, gC_ModeShort[mode], t, pbPts, dateS);
     else
         GOKZ_PrintToChat(client, false,
-            "{yellow}%s{default} - {darkblue}%s{default} - {blue}PRO{default}  {yellow}PB {default}[ {green}%s {default}| {yellow}%d{default} Pts | {yellow}%s{default} ]",
+            "{purple}%s{default} - {darkblue}%s{default} - {blue}PRO{default}  {yellow}PB {default}[ {lightgreen}%s {default}| {yellow}%d{default}{grey} Pts{default} | {bluegrey}%s{default} ]",
             map, gC_ModeShort[mode], t, pbPts, dateS);
 }
 
@@ -175,7 +176,7 @@ static void HTTPRequestCompleted_Stage2(Handle request, bool failure, bool reque
     if (pbTime > 0.0)
     {
         PrintPBLine(client, mode, hasTeleports, map, pbTime, pbPoints, dateOnly);
-        StorePB(target, mode, hasTeleports, map, pbTime, pbPoints);
+        StorePB(target, mode, hasTeleports, map, pbTime, pbPoints, dateOnly);
     }
 
     // If started with NUB, trigger PRO leg
@@ -208,29 +209,67 @@ public void GOKZ_LR_OnTimeProcessed(int client, int steamID, int mapID, int cour
     if (!IsValidClient(client))
         return;
 
-    // Only when it’s actually a new PB (or first completion)
-    if (!firstTime && pbDiff >= 0.0)
-        return;
-
     bool isPro = (teleportsUsed == 0);
     int hasTP = isPro ? 0 : 1;
-
-    // Snapshot the PRE-update baseline *now*
-    float oldTime = 0.0;
-    int oldPts = 0;
     char map[64]; GetCurrentMap(map, sizeof map); GetMapDisplayName(map, map, sizeof map);
-    bool hadBaseline = GetStoredPB(client, mode, hasTP, map, oldTime, oldPts);
 
-    DataPack dp = CreateDataPack();
-    dp.WriteCell(GetClientUserId(client)); // userid
-    dp.WriteCell(hasTP);                   // leg
-    dp.WriteFloat(runTime);                // NEW PB time (ground truth for Δ)
-    dp.WriteFloat(oldTime);                // snapshot of OLD PB time
-    dp.WriteCell(oldPts);                  // snapshot of OLD PB points
-    dp.WriteCell(hadBaseline ? 1 : 0);     // snapshot: had baseline?
+    // Get cached PB data
+    float cachedTime = 0.0;
+    int cachedPts = 0;
+    char cachedDate[16]; cachedDate[0] = '\0';
+    bool hadBaseline = GetStoredPB(client, mode, hasTP, map, cachedTime, cachedPts, cachedDate, sizeof cachedDate);
 
-    // A short delay is fine; we already captured baseline locally.
-    CreateTimer(2.0, Timer_FetchAndPrintPB, dp, TIMER_FLAG_NO_MAPCHANGE);
+    // Check if PB was broken (negative pbDiff means improvement, or firstTime)
+    bool pbBroken = firstTime || pbDiff < 0.0;
+
+    if (pbBroken)
+    {
+        // PB broken: delay 2s, fetch from API to get updated points
+        DataPack dp = CreateDataPack();
+        dp.WriteCell(GetClientUserId(client)); // userid
+        dp.WriteCell(hasTP);                   // leg
+        dp.WriteFloat(runTime);                // NEW PB time (ground truth for Δ)
+        dp.WriteFloat(cachedTime);             // snapshot of OLD PB time
+        dp.WriteCell(cachedPts);               // snapshot of OLD PB points
+        dp.WriteCell(hadBaseline ? 1 : 0);     // snapshot: had baseline?
+
+        // A short delay is fine; we already captured baseline locally.
+        CreateTimer(2.0, Timer_FetchAndPrintPB, dp, TIMER_FLAG_NO_MAPCHANGE);
+    }
+    else
+    {
+        // Not a PB break: compare runTime to cached PB, no API fetch needed
+        if (hadBaseline)
+        {
+            // Calculate diff using runTime vs cachedTime
+            float dt = runTime - cachedTime;
+            float dAbs = FloatAbs(dt);
+            char dTimeS[24]; FormatDurationDiff(dTimeS, sizeof dTimeS, dAbs);
+
+            char diffInline[48]; diffInline[0] = '\0';
+            if (dt < 0.0)
+                Format(diffInline, sizeof diffInline, " ({green}-%s{default})", dTimeS);
+            else if (dt > 0.0)
+                Format(diffInline, sizeof diffInline, " ({red}+%s{default})", dTimeS);
+            else
+                Format(diffInline, sizeof diffInline, " (±00:00.00)");
+
+            char t[32]; FormatDuration(t, sizeof t, cachedTime);
+            char dateS[32]; FormatDateShort(cachedDate, dateS, sizeof dateS);
+
+            char prefix[16];
+            if (hasTP > 0)
+                strcopy(prefix, sizeof prefix, "{gold}NUB");
+            else
+                strcopy(prefix, sizeof prefix, "{blue}PRO");
+
+            GOKZ_PrintToChat(
+                client, false,
+                "{purple}%s{default} - {darkblue}%s{default} - %s{default}  {yellow}PB {default}[ {lightgreen}%s{default}%s | {yellow}%d{default}{grey} Pts{default} | {bluegrey}%s{default} ]",
+                map, gC_ModeShort[mode], prefix, t, diffInline, cachedPts, dateS
+            );
+        }
+    }
 }
 
 public Action Timer_FetchAndPrintPB(Handle timer, DataPack data)
@@ -260,12 +299,12 @@ public Action Timer_FetchAndPrintPB(Handle timer, DataPack data)
     carry.WriteCell(0);                // course
     carry.WriteCell(hasTP);
     carry.WriteString(map);
-    carry.WriteFloat(runTime);         // keep the NEW PB time
-    carry.WriteFloat(oldTime);         // keep the OLD PB time
-    carry.WriteCell(oldPts);           // keep the OLD PB points
+    carry.WriteFloat(runTime);         // keep the NEW PB time (from run)
+    carry.WriteFloat(oldTime);         // keep the OLD PB time (cached)
+    carry.WriteCell(oldPts);           // keep the OLD PB points (cached)
     carry.WriteCell(hadBaseline ? 1 : 0);
 
-    // We still fetch to get date + new points, but Δ uses runTime vs oldTime.
+    // Fetch to get updated points and date. Time diff uses runTime vs oldTime, points diff uses fetched vs cached.
     RequestGlobalPB(false, client, map, 0, mode, hasTP == 1, GlobalPB_Callback_PrintPBWithDiff, carry);
 
     delete data;

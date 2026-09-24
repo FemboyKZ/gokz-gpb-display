@@ -120,7 +120,7 @@ stock int FormatDuration(char[] buffer, int maxlength, float duration)
 
 bool GetRequestRecordInfoWithDate(Handle request, float &time, int &tps, int &points, char[] when, int whenLen)
 {
-    LogMessage("[GPB] Enter GetRequestRecordInfoWithDate (single-read)");
+    //(LogMessage("[GPB] Enter GetRequestRecordInfoWithDate (single-read)");
 
     time = -1.0;
     tps = -1;
@@ -130,7 +130,7 @@ bool GetRequestRecordInfoWithDate(Handle request, float &time, int &tps, int &po
     int bodySize;
     if (!SteamWorks_GetHTTPResponseBodySize(request, bodySize) || bodySize <= 0)
     {
-        LogMessage("[GPB] No body or size<=0 (%d)", bodySize);
+        //LogMessage("[GPB] No body or size<=0 (%d)", bodySize);
         return false;
     }
 
@@ -139,16 +139,16 @@ bool GetRequestRecordInfoWithDate(Handle request, float &time, int &tps, int &po
     // IMPORTANT: read with EXACT bodySize
     if (!SteamWorks_GetHTTPResponseBodyData(request, body, bodySize))
     {
-        LogMessage("[GPB] GetHTTPResponseBodyData failed (expect=%d)", bodySize);
+        //LogMessage("[GPB] GetHTTPResponseBodyData failed (expect=%d)", bodySize);
         return false;
     }
     body[bodySize] = '\0';
-    LogMessage("[GPB] Body: %s", body);
+    //LogMessage("[GPB] Body: %s", body);
 
     Handle root = json_load(body);
     if (root == null)
     {
-        LogMessage("[GPB] json_load failed");
+        //LogMessage("[GPB] json_load failed");
         return false;
     }
 
@@ -172,7 +172,7 @@ bool GetRequestRecordInfoWithDate(Handle request, float &time, int &tps, int &po
                 json_object_get_string(obj, "created_on", when, whenLen);
             }
 
-            LogMessage("[GPB] Parsed: time=%.2f tps=%d pts=%d date=%s", time, tps, points, when);
+            //LogMessage("[GPB] Parsed: time=%.2f tps=%d pts=%d date=%s", time, tps, points, when);
             ok = (time >= 0.0); // we consider success if we got a time
 
             delete objPts;
